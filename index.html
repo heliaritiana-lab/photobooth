@@ -91,8 +91,8 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     <div>
       <p class="label">Look</p>
       <div class="filters" id="filters" role="group" aria-label="Filter">
-        <button class="chip" data-f="none" aria-pressed="false">Natural</button>
-        <button class="chip" data-f="bw" aria-pressed="true">Silver B&amp;W</button>
+        <button class="chip" data-f="none" aria-pressed="true">Natural</button>
+        <button class="chip" data-f="bw" aria-pressed="false">Silver B&amp;W</button>
         <button class="chip" data-f="sepia" aria-pressed="false">Sepia</button>
         <button class="chip" data-f="faded" aria-pressed="false">Faded film</button>
         <button class="chip" data-f="punch" aria-pressed="false">Punch</button>
@@ -136,23 +136,48 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
         saveBtn = $("save"), caption = $("caption");
 
   const PW = 800, PH = 600;      // shot size (4:3)
-  let filter = "bw";
+  let filter = "none";   // every visit starts on Natural
   let shots = [];                // raw (unfiltered) canvases
   let stream = null, busy = false;
 
-  /* ---------- filters (pixel ops, works on every browser) ---------- */
+  /* ---------- filters ----------
+     Each look is a list of CSS filter steps. The live camera preview uses them
+     as a CSS `filter`; photos get the same steps done pixel by pixel (same
+     math as the CSS spec), so what you see live is what ends up on the strip. */
+  const LOOKS = {
+    none:  [],
+    bw:    [["grayscale", 1], ["contrast", 1.25]],
+    sepia: [["sepia", 0.9], ["contrast", 1.05], ["brightness", 1.05]],
+    faded: [["contrast", 0.8], ["brightness", 1.08], ["saturate", 0.8], ["sepia", 0.15]],
+    punch: [["saturate", 1.45], ["contrast", 1.1]],
+  };
+  const cssFilter = f => LOOKS[f].map(([op, v]) => `${op}(${v})`).join(" ") || "none";
+
+  // 3x3 colour matrices from the CSS Filter Effects spec
+  function matrix(op, a) {
+    const k = 1 - a;
+    if (op === "grayscale") return [.2126+.7874*k, .7152-.7152*k, .0722-.0722*k, .2126-.2126*k, .7152+.2848*k, .0722-.0722*k, .2126-.2126*k, .7152-.7152*k, .0722+.9278*k];
+    if (op === "sepia") return [.393+.607*k, .769-.769*k, .189-.189*k, .349-.349*k, .686+.314*k, .168-.168*k, .272-.272*k, .534-.534*k, .131+.869*k];
+    if (op === "saturate") return [.213+.787*a, .715-.715*a, .072-.072*a, .213-.213*a, .715+.285*a, .072-.072*a, .213-.213*a, .715-.715*a, .072+.928*a];
+    return null;
+  }
+  const clamp = v => v < 0 ? 0 : v > 255 ? 255 : v;
+
   function applyFilter(src, f) {
     const c = document.createElement("canvas"); c.width = PW; c.height = PH;
     const x = c.getContext("2d"); x.drawImage(src, 0, 0);
-    if (f === "none") return c;
+    const steps = LOOKS[f];
+    if (!steps.length) return c;
+    const prepared = steps.map(([op, v]) => [op, v, matrix(op, v)]);
     const img = x.getImageData(0, 0, PW, PH), d = img.data;
     for (let i = 0; i < d.length; i += 4) {
       let r = d[i], g = d[i+1], b = d[i+2];
-      const l = 0.299*r + 0.587*g + 0.114*b;
-      if (f === "bw") { const v = Math.min(255, Math.max(0, (l - 128) * 1.25 + 128)); r = g = b = v; }
-      else if (f === "sepia") { r = l*1.07 + 20; g = l*0.92 + 8; b = l*0.72; }
-      else if (f === "faded") { r = r*0.82 + 40; g = g*0.80 + 34; b = b*0.78 + 42; }
-      else if (f === "punch") { const s = 1.45; r = l + (r-l)*s; g = l + (g-l)*s; b = l + (b-l)*s; r = (r-128)*1.1+128; g = (g-128)*1.1+128; b = (b-128)*1.1+128; }
+      for (const [op, v, m] of prepared) {
+        if (m) { const R = m[0]*r + m[1]*g + m[2]*b, G = m[3]*r + m[4]*g + m[5]*b, B = m[6]*r + m[7]*g + m[8]*b; r = R; g = G; b = B; }
+        else if (op === "contrast") { r = (r - 127.5) * v + 127.5; g = (g - 127.5) * v + 127.5; b = (b - 127.5) * v + 127.5; }
+        else if (op === "brightness") { r *= v; g *= v; b *= v; }
+        r = clamp(r); g = clamp(g); b = clamp(b);
+      }
       d[i] = r; d[i+1] = g; d[i+2] = b;
     }
     x.putImageData(img, 0, 0);
@@ -318,6 +343,7 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     const b = e.target.closest(".chip"); if (!b) return;
     filter = b.dataset.f;
     document.querySelectorAll("#filters .chip").forEach(c => c.setAttribute("aria-pressed", c === b ? "true" : "false"));
+    video.style.filter = cssFilter(filter);   // live preview shows the look right away
     drawStrip();
     if (!preview.hidden && shots.length) showPreview(shots[shots.length-1]);
   });
@@ -333,17 +359,13 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     zoom = z;
     $("finder").style.setProperty("--zoom", z);
     lensChips.forEach(c => c.setAttribute("aria-pressed", parseFloat(c.dataset.z) === z ? "true" : "false"));
-    try { localStorage.setItem("booth-zoom", z); } catch {}
   }
   $("lens").addEventListener("click", e => {
     const b = e.target.closest(".chip"); if (!b || busy) return;
     setZoom(parseFloat(b.dataset.z));
     if (stream && shots.length < 4) { video.hidden = false; preview.hidden = true; }  // back to live view to compare
   });
-  try {
-    const saved = parseFloat(localStorage.getItem("booth-zoom"));
-    setZoom([...lensChips].some(c => parseFloat(c.dataset.z) === saved) ? saved : zoom);
-  } catch { setZoom(zoom); }
+  setZoom(zoom);   // every visit starts on Normal
 
   retakeBtn.addEventListener("click", () => {
     cancelled = true;   // also stops a countdown in progress
