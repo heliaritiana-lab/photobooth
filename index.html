@@ -40,9 +40,10 @@ h1 { font-family: var(--f-sign); font-weight: 400; font-size: clamp(30px, 6vw, 4
 .finder { position: relative; aspect-ratio: 4 / 3; max-width: 100%; background: #110e14; border-radius: 8px; overflow: hidden; display: grid; place-items: center; }
 .finder video, .finder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .finder video { transform: scaleX(-1) scale(var(--zoom, 1.4)); }
-.zoomrow { display: flex; align-items: center; gap: 12px; }
-.zoomrow input { flex: 1; accent-color: var(--brass); }
-.zoomrow output { font: 500 13px var(--f-mono); min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
+.finder video { transition: transform .25s ease; }
+.hintbox { display: grid; gap: 14px; justify-items: center; max-width: 34ch; }
+.hintbox p { margin: 0; }
+.hintbox .btn { flex: none; }
 .finder .hint { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; color: var(--muted); font-size: 14px; }
 .count { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--f-sign); font-size: 120px; color: var(--ink); text-shadow: 0 4px 30px rgba(0,0,0,.6); pointer-events: none; }
 .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
@@ -76,7 +77,12 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     <div class="finder" id="finder">
       <video id="video" playsinline muted hidden></video>
       <canvas id="preview" width="800" height="600" hidden></canvas>
-      <div class="hint" id="hint">Tap <strong>&nbsp;Take photo&nbsp;</strong> to open your camera.</div>
+      <div class="hint" id="hint">
+        <div class="hintbox">
+          <p id="hinttext">Turn on the camera to see yourself before the countdown.</p>
+          <button class="btn primary" id="camon">Turn on camera</button>
+        </div>
+      </div>
       <div class="count" id="count" hidden></div>
       <div class="flash" id="flash"></div>
       <div class="shotno" id="shotno">SHOT 1 / 4</div>
@@ -94,10 +100,10 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     </div>
 
     <div>
-      <label class="label" for="zoom">Zoom (live camera)</label>
-      <div class="zoomrow">
-        <input type="range" id="zoom" min="1" max="2.5" step="0.1" value="1.4">
-        <output id="zoomval" for="zoom">1.4×</output>
+      <p class="label">Camera</p>
+      <div class="filters" id="lens" role="group" aria-label="Camera">
+        <button class="chip" data-z="1.5" aria-pressed="true">Normal</button>
+        <button class="chip" data-z="1" aria-pressed="false">Wide angle</button>
       </div>
     </div>
 
@@ -266,24 +272,36 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     count.hidden = true; busy = false; updateButtons();
   }
 
-  // First tap: try the live camera and run all 4 shots automatically.
-  // If the live camera is blocked, later taps open the camera app instead.
-  // That branch must stay synchronous: phones only open the camera picker
-  // when file.click() runs directly inside the tap.
+  /* ---------- camera start-up: live preview before any photo ---------- */
+  // The page asks for the camera as soon as it opens, so you can see yourself
+  // and pick Normal or Wide angle before the countdown. If the browser needs
+  // a tap first, the "Turn on camera" button does it.
+  // If the live camera is refused, Take photo opens the camera app instead
+  // (that branch must stay synchronous: phones only open the camera picker
+  // when file.click() runs directly inside the tap).
+  const camBtn = $("camon"), hintText = $("hinttext");
   let liveFailed = false;
+  async function startCamera(fromTap) {
+    camBtn.disabled = true; hintText.textContent = "Opening camera…";
+    const ok = await tryLive();
+    camBtn.disabled = false;
+    if (ok) { status.textContent = ""; }
+    else if (fromTap) {
+      liveFailed = true; camBtn.hidden = true;
+      hintText.textContent = "The live camera isn't available here. Tap Take photo to use your camera app, one photo per tap.";
+    } else {
+      hintText.textContent = "Turn on the camera to see yourself before the countdown.";
+    }
+    updateButtons();
+    return ok;
+  }
+  camBtn.addEventListener("click", () => startCamera(true));
+  startCamera(false);
+
   shootBtn.addEventListener("click", async () => {
     if (busy || shots.length >= 4) return;
     if (liveFailed) { file.click(); return; }
-    if (!stream) {
-      shootBtn.disabled = true; status.textContent = "Opening camera…";
-      const ok = await tryLive();
-      if (!ok) {
-        liveFailed = true; updateButtons();
-        status.textContent = "The automatic countdown needs the live camera, which isn't allowed here. Tap Take photo to use your camera app, one photo per tap.";
-        return;
-      }
-      status.textContent = "";
-    }
+    if (!stream && !(await startCamera(true))) return;
     runSequence();
   });
 
@@ -299,24 +317,33 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   document.getElementById("filters").addEventListener("click", e => {
     const b = e.target.closest(".chip"); if (!b) return;
     filter = b.dataset.f;
-    document.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c === b ? "true" : "false"));
+    document.querySelectorAll("#filters .chip").forEach(c => c.setAttribute("aria-pressed", c === b ? "true" : "false"));
     drawStrip();
     if (!preview.hidden && shots.length) showPreview(shots[shots.length-1]);
   });
 
   caption.addEventListener("input", drawStrip);
 
-  /* ---------- zoom (the iPad front camera is ultra-wide) ---------- */
-  const zoomInput = $("zoom"), zoomVal = $("zoomval");
-  let zoom = 1.4;
-  try { const z = parseFloat(localStorage.getItem("booth-zoom")); if (z >= 1 && z <= 2.5) zoom = z; } catch {}
+  /* ---------- Normal / Wide angle ---------- */
+  // The iPad front camera is ultra-wide. "Normal" crops in 1.5x (preview and photo alike);
+  // "Wide angle" keeps the full frame. Change the data-z values in the HTML to adjust.
+  const lensChips = document.querySelectorAll("#lens .chip");
+  let zoom = 1.5;
   function setZoom(z) {
-    zoom = z; zoomInput.value = z; zoomVal.textContent = z.toFixed(1) + "×";
+    zoom = z;
     $("finder").style.setProperty("--zoom", z);
+    lensChips.forEach(c => c.setAttribute("aria-pressed", parseFloat(c.dataset.z) === z ? "true" : "false"));
     try { localStorage.setItem("booth-zoom", z); } catch {}
   }
-  zoomInput.addEventListener("input", () => setZoom(parseFloat(zoomInput.value)));
-  setZoom(zoom);
+  $("lens").addEventListener("click", e => {
+    const b = e.target.closest(".chip"); if (!b || busy) return;
+    setZoom(parseFloat(b.dataset.z));
+    if (stream && shots.length < 4) { video.hidden = false; preview.hidden = true; }  // back to live view to compare
+  });
+  try {
+    const saved = parseFloat(localStorage.getItem("booth-zoom"));
+    setZoom([...lensChips].some(c => parseFloat(c.dataset.z) === saved) ? saved : zoom);
+  } catch { setZoom(zoom); }
 
   retakeBtn.addEventListener("click", () => {
     cancelled = true;   // also stops a countdown in progress
