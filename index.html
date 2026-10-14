@@ -237,13 +237,14 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   /* ---------- strip designs ----------
      To add a design: put a PNG in "strip designs/" with pure green (#00FF00)
      rectangles where the photos go, then add one line below.
+     The src must match the file name exactly, capitals and spaces included.
      The green areas are found automatically and filled in reading order
      (top to bottom, left to right). The swatch is just the colour dot on the button. */
   const DESIGNS = [
     { id: "classic",    name: "Classic",    swatch: "#f7f3ec" },
     { id: "red",        name: "Red",        swatch: "#7a0019", src: "strip designs/red.png" },
     { id: "ambondrona", name: "Ambondrona", swatch: "#000000", src: "strip designs/ambondrona.png" },
-    { id: "bikini bottom", name: "Bikini Bottom", swatch: "#000000", src: "strip designs/bikini bottom.png" },
+    { id: "bikini-bottom", name: "Bikini Bottom", swatch: "#7fd3e0", src: "strip designs/Bikini Bottom.png" },   // file names are case-sensitive on GitHub Pages
   ];
 
   // Classic: drawn in code, four 4:3 photos with the caption and date underneath
@@ -275,39 +276,75 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     const fx = frame.getContext("2d"); fx.drawImage(img, 0, 0);
     const data = fx.getImageData(0, 0, W, H), d = data.data;
 
-    // 1. mark green pixels and make them transparent
+    // 1. mark the pure green pixels
     const mask = new Uint8Array(W * H);
     for (let p = 0, i = 0; p < mask.length; p++, i += 4) {
-      if (isGreen(d[i], d[i+1], d[i+2])) { mask[p] = 1; d[i+3] = 0; }
+      if (isGreen(d[i], d[i+1], d[i+2])) mask[p] = 1;
     }
-    // 1b. also clear the soft, half-green pixels along the edges of each area
-    //     (anti-aliasing from the design app), so no green outline shows
-    const R = 2;
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-      const p = y * W + x, i = p * 4;
-      if (mask[p] || d[i+1] - Math.max(d[i], d[i+2]) <= 15) continue;
-      search: for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
-        const yy = y + dy, xx = x + dx;
-        if (yy >= 0 && yy < H && xx >= 0 && xx < W && mask[yy * W + xx]) { d[i+3] = 0; break search; }
-      }
-    }
-    fx.putImageData(data, 0, 0);
 
-    // 2. group touching green pixels into areas (flood fill) and keep their bounding boxes
-    const seen = new Uint8Array(W * H), stack = new Int32Array(W * H), boxes = [];
+    // 2. group touching green pixels (flood fill). Only big groups are photo areas:
+    //    small green bits are part of the artwork (grass, seaweed…) and stay as they are.
+    const label = new Int32Array(W * H), stack = new Int32Array(W * H), groups = [];
     for (let start = 0; start < mask.length; start++) {
-      if (!mask[start] || seen[start]) continue;
+      if (!mask[start] || label[start]) continue;
+      const id = groups.length + 1;
       let top = 0, x0 = W, y0 = H, x1 = 0, y1 = 0, area = 0;
-      stack[top++] = start; seen[start] = 1;
+      stack[top++] = start; label[start] = id;
       while (top) {
         const p = stack[--top], px = p % W, py = (p - px) / W;
         area++;
         if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
         const n = [px > 0 ? p - 1 : -1, px < W - 1 ? p + 1 : -1, py > 0 ? p - W : -1, py < H - 1 ? p + W : -1];
-        for (const q of n) if (q >= 0 && mask[q] && !seen[q]) { seen[q] = 1; stack[top++] = q; }
+        for (const q of n) if (q >= 0 && mask[q] && !label[q]) { label[q] = id; stack[top++] = q; }
       }
-      if (area > W * H * 0.005) boxes.push({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
+      groups.push({ id, x0, y0, x1, y1, area });
     }
+
+    // 3. for each photo area keep its solid core rectangle. Rows that are nearly full
+    //    are found first, then columns counted only inside those rows (and once more
+    //    the other way), so green artwork touching the rectangle is trimmed off.
+    const boxes = [], hole = new Uint8Array(W * H), PAD = 0;
+    const core = arr => {
+      const lim = Math.max(...arr) * 0.8; let a = -1, b = -1;
+      arr.forEach((n, k) => { if (n >= lim) { if (a < 0) a = k; b = k; } });
+      return [a, b];
+    };
+    for (const g of groups) {
+      if (g.area <= W * H * 0.005) continue;
+      let y0 = g.y0, y1 = g.y1, x0 = g.x0, x1 = g.x1;
+      for (let pass = 0; pass < 2; pass++) {
+        const rowN = new Int32Array(y1 - y0 + 1);
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (label[y * W + x] === g.id) rowN[y - y0]++;
+        const [r0, r1] = core(rowN); y1 = y0 + r1; y0 = y0 + r0;
+        const colN = new Int32Array(x1 - x0 + 1);
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (label[y * W + x] === g.id) colN[x - x0]++;
+        const [c0, c1] = core(colN); x1 = x0 + c1; x0 = x0 + c0;
+      }
+      const box = { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+      boxes.push(box);
+      // the hole: this area's green pixels inside the rectangle
+      for (let y = Math.max(0, y0 - PAD); y <= Math.min(H - 1, y1 + PAD); y++)
+        for (let x = Math.max(0, x0 - PAD); x <= Math.min(W - 1, x1 + PAD); x++) {
+          const p = y * W + x;
+          if (label[p] === g.id) { hole[p] = 1; d[p * 4 + 3] = 0; }
+        }
+    }
+
+    // 4. also clear the soft, half-green pixels along the edges of each hole
+    //    (anti-aliasing from the design app), so no green outline shows
+    const R = 2;
+    for (const b of boxes) {
+      for (let y = Math.max(0, b.y - PAD - R); y < Math.min(H, b.y + b.h + PAD + R); y++)
+        for (let x = Math.max(0, b.x - PAD - R); x < Math.min(W, b.x + b.w + PAD + R); x++) {
+          const p = y * W + x, i = p * 4;
+          if (hole[p] || mask[p] || d[i+1] - Math.max(d[i], d[i+2]) <= 15) continue;   // soft edge pixels only, never pure-green artwork
+          search: for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+            const yy = y + dy, xx = x + dx;
+            if (yy >= 0 && yy < H && xx >= 0 && xx < W && hole[yy * W + xx]) { d[i+3] = 0; break search; }
+          }
+        }
+    }
+    fx.putImageData(data, 0, 0);
 
     // 3. reading order: rows first (areas whose tops are close share a row), then left to right
     boxes.sort((a, b) => a.y - b.y);
