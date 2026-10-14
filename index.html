@@ -1,3 +1,10 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+</head>
+<body>
 <title>Four Frame Booth</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Shrikhand&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
@@ -18,6 +25,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body {
   background: var(--booth); color: var(--ink);
   font: 15px/1.5 var(--f-body);
@@ -30,8 +38,11 @@ h1 { font-family: var(--f-sign); font-weight: 400; font-size: clamp(30px, 6vw, 4
 .sub { color: var(--muted); margin: 0; font-size: 14px; }
 .booth { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; gap: 16px; min-width: 0; }
 .finder { position: relative; aspect-ratio: 4 / 3; max-width: 100%; background: #110e14; border-radius: 8px; overflow: hidden; display: grid; place-items: center; }
-.finder video, .finder canvas { width: 100%; height: 100%; object-fit: cover; display: block; }
-.finder video { transform: scaleX(-1); }
+.finder video, .finder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.finder video { transform: scaleX(-1) scale(var(--zoom, 1.4)); }
+.zoomrow { display: flex; align-items: center; gap: 12px; }
+.zoomrow input { flex: 1; accent-color: var(--brass); }
+.zoomrow output { font: 500 13px var(--f-mono); min-width: 3.5em; text-align: right; font-variant-numeric: tabular-nums; }
 .finder .hint { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px; color: var(--muted); font-size: 14px; }
 .count { position: absolute; inset: 0; display: grid; place-items: center; font-family: var(--f-sign); font-size: 120px; color: var(--ink); text-shadow: 0 4px 30px rgba(0,0,0,.6); pointer-events: none; }
 .flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
@@ -79,6 +90,14 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
         <button class="chip" data-f="sepia" aria-pressed="false">Sepia</button>
         <button class="chip" data-f="faded" aria-pressed="false">Faded film</button>
         <button class="chip" data-f="punch" aria-pressed="false">Punch</button>
+      </div>
+    </div>
+
+    <div>
+      <label class="label" for="zoom">Zoom (live camera)</label>
+      <div class="zoomrow">
+        <input type="range" id="zoom" min="1" max="2.5" step="0.1" value="1.4">
+        <output id="zoomval" for="zoom">1.4×</output>
       </div>
     </div>
 
@@ -135,11 +154,12 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   }
 
   /* ---------- crop any source to 4:3, optionally mirrored ---------- */
-  function capture(src, sw, sh, mirror) {
+  function capture(src, sw, sh, mirror, z = 1) {
     const c = document.createElement("canvas"); c.width = PW; c.height = PH;
     const x = c.getContext("2d");
     const target = PW / PH; let cw = sw, ch = sh;
     if (sw / sh > target) cw = sh * target; else ch = sw / target;
+    cw /= z; ch /= z;   // digital zoom: keep only the centre, same as the preview
     const sx = (sw - cw) / 2, sy = (sh - ch) / 2;
     if (mirror) { x.translate(PW, 0); x.scale(-1, 1); }
     x.drawImage(src, sx, sy, cw, ch, 0, 0, PW, PH);
@@ -218,7 +238,7 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   async function tryLive() {
     if (!navigator.mediaDevices?.getUserMedia) return false;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1280 } }, audio: false });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
       video.srcObject = stream; await video.play();
       video.hidden = false; preview.hidden = true; hint.hidden = true;
       return true;
@@ -239,7 +259,7 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
       }
       count.hidden = true;
       if (cancelled) break;
-      addShot(capture(video, video.videoWidth, video.videoHeight, true));
+      addShot(capture(video, video.videoWidth, video.videoHeight, true, zoom));
       first = false;
       if (shots.length < 4) { status.textContent = "Next photo coming…"; await wait(REVIEW_MS); }
     }
@@ -286,6 +306,18 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
 
   caption.addEventListener("input", drawStrip);
 
+  /* ---------- zoom (the iPad front camera is ultra-wide) ---------- */
+  const zoomInput = $("zoom"), zoomVal = $("zoomval");
+  let zoom = 1.4;
+  try { const z = parseFloat(localStorage.getItem("booth-zoom")); if (z >= 1 && z <= 2.5) zoom = z; } catch {}
+  function setZoom(z) {
+    zoom = z; zoomInput.value = z; zoomVal.textContent = z.toFixed(1) + "×";
+    $("finder").style.setProperty("--zoom", z);
+    try { localStorage.setItem("booth-zoom", z); } catch {}
+  }
+  zoomInput.addEventListener("input", () => setZoom(parseFloat(zoomInput.value)));
+  setZoom(zoom);
+
   retakeBtn.addEventListener("click", () => {
     cancelled = true;   // also stops a countdown in progress
     shots = []; status.textContent = "";
@@ -315,3 +347,6 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   drawStrip(); updateButtons();
 })();
 </script>
+
+</body>
+</html>
