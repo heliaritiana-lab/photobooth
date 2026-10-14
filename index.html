@@ -37,7 +37,7 @@ header { grid-column: 1 / -1; display: flex; align-items: baseline; justify-cont
 h1 { font-family: var(--f-sign); font-weight: 400; font-size: clamp(30px, 6vw, 44px); line-height: 1; margin: 0; color: var(--brass); letter-spacing: .5px; text-wrap: balance; }
 .sub { color: var(--muted); margin: 0; font-size: 14px; }
 .booth { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; display: grid; gap: 16px; min-width: 0; }
-.finder { position: relative; aspect-ratio: 4 / 3; max-width: 100%; background: #110e14; border-radius: 8px; overflow: hidden; display: grid; place-items: center; }
+.finder { position: relative; aspect-ratio: var(--slot-ar, 4 / 3); width: min(100%, calc(62vh * var(--slot-ar-num, 1.333))); justify-self: center; max-width: 100%; background: #110e14; border-radius: 8px; overflow: hidden; display: grid; place-items: center; }
 .finder video, .finder canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .finder video { transform: scaleX(-1) scale(var(--zoom, 1.4)); }
 .finder video { transition: transform .25s ease; }
@@ -54,6 +54,7 @@ h1 { font-family: var(--f-sign); font-weight: 400; font-size: clamp(30px, 6vw, 4
 .filters { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { font: 500 14px var(--f-body); color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; cursor: pointer; }
 .chip[aria-pressed="true"] { background: var(--ink); color: var(--booth); border-color: var(--ink); }
+.chip .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 7px; vertical-align: 0; border: 1px solid rgba(255,255,255,.35); }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
 .btn { font: 600 15px var(--f-body); border-radius: 10px; padding: 12px 18px; cursor: pointer; border: 1px solid var(--line); background: transparent; color: var(--ink); }
 .btn.primary { background: var(--brass); border-color: var(--brass); color: #241a10; flex: 1 1 200px; }
@@ -62,7 +63,7 @@ h1 { font-family: var(--f-sign); font-weight: 400; font-size: clamp(30px, 6vw, 4
 input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); background: #1a1520; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
 .status { min-height: 1.5em; font-size: 13px; color: var(--muted); margin: 0; }
 .stripcol { display: grid; gap: 12px; justify-items: center; }
-#strip { width: 100%; max-width: 240px; height: auto; box-shadow: 0 18px 40px rgba(0,0,0,.45); transform: rotate(-1.5deg); border-radius: 2px; }
+#strip { width: 100%; max-width: var(--strip-w, 240px); height: auto; box-shadow: 0 18px 40px rgba(0,0,0,.45); transform: rotate(-1.5deg); border-radius: 2px; }
 .slot { font: 500 12px var(--f-mono); color: var(--muted); letter-spacing: 1px; text-align: center; }
 @media (prefers-reduced-motion: reduce) { .flash.go { animation: none; } #strip { transform: none; } }
 </style>
@@ -89,6 +90,11 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     </div>
 
     <div>
+      <p class="label">Strip design</p>
+      <div class="filters" id="designs" role="group" aria-label="Strip design"></div>
+    </div>
+
+    <div>
       <p class="label">Look</p>
       <div class="filters" id="filters" role="group" aria-label="Filter">
         <button class="chip" data-f="none" aria-pressed="true">Natural</button>
@@ -107,7 +113,7 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
       </div>
     </div>
 
-    <div>
+    <div id="captionbox">
       <label class="label" for="caption">Caption on the strip</label>
       <input type="text" id="caption" maxlength="28" value="Helia's photobooth">
     </div>
@@ -135,9 +141,10 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
         file = $("file"), status = $("status"), strip = $("strip"), slot = $("slot"),
         saveBtn = $("save"), caption = $("caption");
 
-  const PW = 800, PH = 600;      // shot size (4:3)
+  const PW = 800, PH = 600;      // size of the sample frames
+  const MAX_SHOT = 1600;         // longest side kept for each photo
   let filter = "none";   // every visit starts on Natural
-  let shots = [];                // raw (unfiltered) canvases
+  let shots = [];                // raw (unfiltered) full camera frames
   let stream = null, busy = false;
 
   /* ---------- filters ----------
@@ -163,13 +170,13 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   }
   const clamp = v => v < 0 ? 0 : v > 255 ? 255 : v;
 
-  function applyFilter(src, f) {
-    const c = document.createElement("canvas"); c.width = PW; c.height = PH;
-    const x = c.getContext("2d"); x.drawImage(src, 0, 0);
+  // Filters a canvas in place
+  function applyFilter(c, f) {
     const steps = LOOKS[f];
     if (!steps.length) return c;
+    const x = c.getContext("2d");
     const prepared = steps.map(([op, v]) => [op, v, matrix(op, v)]);
-    const img = x.getImageData(0, 0, PW, PH), d = img.data;
+    const img = x.getImageData(0, 0, c.width, c.height), d = img.data;
     for (let i = 0; i < d.length; i += 4) {
       let r = d[i], g = d[i+1], b = d[i+2];
       for (const [op, v, m] of prepared) {
@@ -184,17 +191,27 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     return c;
   }
 
-  /* ---------- crop any source to 4:3, optionally mirrored ---------- */
+  /* ---------- keep the whole camera frame (after zoom), optionally mirrored ----------
+     Each design crops it to the shape of its photo areas later, the same way
+     the viewfinder does, so a photo can move between designs. */
   function capture(src, sw, sh, mirror, z = 1) {
-    const c = document.createElement("canvas"); c.width = PW; c.height = PH;
+    const cw = sw / z, ch = sh / z;   // digital zoom: keep only the centre, same as the preview
+    const s = Math.min(1, MAX_SHOT / Math.max(cw, ch));
+    const c = document.createElement("canvas"); c.width = Math.round(cw * s); c.height = Math.round(ch * s);
     const x = c.getContext("2d");
-    const target = PW / PH; let cw = sw, ch = sh;
-    if (sw / sh > target) cw = sh * target; else ch = sw / target;
-    cw /= z; ch /= z;   // digital zoom: keep only the centre, same as the preview
-    const sx = (sw - cw) / 2, sy = (sh - ch) / 2;
-    if (mirror) { x.translate(PW, 0); x.scale(-1, 1); }
-    x.drawImage(src, sx, sy, cw, ch, 0, 0, PW, PH);
+    if (mirror) { x.translate(c.width, 0); x.scale(-1, 1); }
+    x.drawImage(src, (sw - cw) / 2, (sh - ch) / 2, cw, ch, 0, 0, c.width, c.height);
     return c;
+  }
+
+  // A w×h canvas filled with the centre of src (like CSS object-fit: cover), with the look applied
+  function renderPhoto(src, w, h, f = filter) {
+    w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    const sw = src.width, sh = src.height, k = Math.max(w / sw, h / sh);
+    const cw = w / k, ch = h / k;
+    c.getContext("2d").drawImage(src, (sw - cw) / 2, (sh - ch) / 2, cw, ch, 0, 0, w, h);
+    return applyFilter(c, f);
   }
 
   /* ---------- sample frames so the strip isn't empty at rest ---------- */
@@ -217,53 +234,199 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
     return c;
   }
 
-  /* ---------- compose the strip ---------- */
+  /* ---------- strip designs ----------
+     To add a design: put a PNG in "strip designs/" with pure green (#00FF00)
+     rectangles where the photos go, then add one line below.
+     The green areas are found automatically and filled in reading order
+     (top to bottom, left to right). The swatch is just the colour dot on the button. */
+  const DESIGNS = [
+    { id: "classic",    name: "Classic",    swatch: "#f7f3ec" },
+    { id: "red",        name: "Red",        swatch: "#7a0019", src: "strip designs/red.png" },
+    { id: "ambondrona", name: "Ambondrona", swatch: "#000000", src: "strip designs/ambondrona.png" },
+  ];
+
+  // Classic: drawn in code, four 4:3 photos with the caption and date underneath
   const SW = 640, M = 40, G = 24, IW = SW - 2*M, IH = IW * 3/4, FOOT = 170;
-  strip.height = M + 4*IH + 3*G + FOOT;
-  function drawStrip() {
-    const x = strip.getContext("2d");
-    x.fillStyle = "#f7f3ec"; x.fillRect(0, 0, SW, strip.height);
-    for (let i = 0; i < 4; i++) {
-      const y = M + i*(IH + G);
-      const src = shots[i] || (shots.length === 0 ? sampleShot(i) : null);
-      if (src) x.drawImage(applyFilter(src, filter), M, y, IW, IH);
-      else {
-        x.fillStyle = "#e7e0d6"; x.fillRect(M, y, IW, IH);
-        x.fillStyle = "#a99fa0"; x.font = "500 28px 'IBM Plex Mono', monospace";
-        x.textAlign = "center"; x.fillText(String(i+1), SW/2, y + IH/2 + 10); x.textAlign = "left";
+  const classic = {
+    width: SW, height: M + 4*IH + 3*G + FOOT,
+    slots: [0, 1, 2, 3].map(i => ({ x: M, y: M + i*(IH + G), w: IW, h: IH })),
+    before(x) { x.fillStyle = "#f7f3ec"; x.fillRect(0, 0, this.width, this.height); },
+    after(x) {
+      const fy = M + 4*IH + 3*G;
+      x.fillStyle = "#2a2230"; x.textAlign = "center";
+      x.font = "52px Shrikhand, Georgia, serif";
+      x.fillText(caption.value.trim() || "Four Frame Booth", SW/2, fy + 78, SW - 2*M);
+      x.font = "500 22px 'IBM Plex Mono', monospace"; x.fillStyle = "#6f6470";
+      const d = new Date();
+      x.fillText(d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }).replace(/\//g, " · "), SW/2, fy + 124);
+      x.textAlign = "left";
+    },
+  };
+
+  // Image designs: load the PNG, find the green areas, and turn them into holes
+  const isGreen = (r, g, b) => g > 150 && r < 120 && b < 120 && g - Math.max(r, b) > 80;
+  async function buildImageDesign(src) {
+    const img = new Image();
+    img.src = encodeURI(src);
+    await img.decode();
+    const W = img.naturalWidth, H = img.naturalHeight;
+    const frame = document.createElement("canvas"); frame.width = W; frame.height = H;
+    const fx = frame.getContext("2d"); fx.drawImage(img, 0, 0);
+    const data = fx.getImageData(0, 0, W, H), d = data.data;
+
+    // 1. mark green pixels and make them transparent
+    const mask = new Uint8Array(W * H);
+    for (let p = 0, i = 0; p < mask.length; p++, i += 4) {
+      if (isGreen(d[i], d[i+1], d[i+2])) { mask[p] = 1; d[i+3] = 0; }
+    }
+    // 1b. also clear the soft, half-green pixels along the edges of each area
+    //     (anti-aliasing from the design app), so no green outline shows
+    const R = 2;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const p = y * W + x, i = p * 4;
+      if (mask[p] || d[i+1] - Math.max(d[i], d[i+2]) <= 15) continue;
+      search: for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+        const yy = y + dy, xx = x + dx;
+        if (yy >= 0 && yy < H && xx >= 0 && xx < W && mask[yy * W + xx]) { d[i+3] = 0; break search; }
       }
     }
-    const fy = M + 4*IH + 3*G;
-    x.fillStyle = "#2a2230"; x.textAlign = "center";
-    x.font = "52px Shrikhand, Georgia, serif";
-    x.fillText(caption.value.trim() || "Four Frame Booth", SW/2, fy + 78, SW - 2*M);
-    x.font = "500 22px 'IBM Plex Mono', monospace"; x.fillStyle = "#6f6470";
-    const d = new Date();
-    x.fillText(d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }).replace(/\//g, " · "), SW/2, fy + 124);
-    x.textAlign = "left";
-    slot.textContent = shots.length === 0 ? "SAMPLE STRIP · 0 OF 4 TAKEN" : `${shots.length} OF 4 TAKEN`;
-    saveBtn.disabled = shots.length < 4;
+    fx.putImageData(data, 0, 0);
+
+    // 2. group touching green pixels into areas (flood fill) and keep their bounding boxes
+    const seen = new Uint8Array(W * H), stack = new Int32Array(W * H), boxes = [];
+    for (let start = 0; start < mask.length; start++) {
+      if (!mask[start] || seen[start]) continue;
+      let top = 0, x0 = W, y0 = H, x1 = 0, y1 = 0, area = 0;
+      stack[top++] = start; seen[start] = 1;
+      while (top) {
+        const p = stack[--top], px = p % W, py = (p - px) / W;
+        area++;
+        if (px < x0) x0 = px; if (px > x1) x1 = px; if (py < y0) y0 = py; if (py > y1) y1 = py;
+        const n = [px > 0 ? p - 1 : -1, px < W - 1 ? p + 1 : -1, py > 0 ? p - W : -1, py < H - 1 ? p + W : -1];
+        for (const q of n) if (q >= 0 && mask[q] && !seen[q]) { seen[q] = 1; stack[top++] = q; }
+      }
+      if (area > W * H * 0.005) boxes.push({ x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
+    }
+
+    // 3. reading order: rows first (areas whose tops are close share a row), then left to right
+    boxes.sort((a, b) => a.y - b.y);
+    const rows = [];
+    for (const b of boxes) {
+      const row = rows.find(r => Math.abs(r[0].y - b.y) < r[0].h * 0.3);
+      row ? row.push(b) : rows.push([b]);
+    }
+    const slots = rows.flatMap(r => r.sort((a, b) => a.x - b.x));
+    return { width: W, height: H, slots, frame };
+  }
+
+  const designCache = {};
+  function getDesign(id) {
+    if (!designCache[id]) {
+      const def = DESIGNS.find(d => d.id === id);
+      designCache[id] = def.src ? buildImageDesign(def.src) : Promise.resolve(classic);
+    }
+    return designCache[id];
+  }
+
+  let designId = "classic", design = classic;
+  const need = () => design.slots.length;   // photos this design takes
+
+  /* ---------- compose the strip ---------- */
+  function drawStrip() {
+    const D = design;
+    if (strip.width !== D.width) strip.width = D.width;
+    if (strip.height !== D.height) strip.height = D.height;
+    const x = strip.getContext("2d");
+    x.clearRect(0, 0, D.width, D.height);
+    if (D.before) D.before(x);
+    D.slots.forEach((s, i) => {
+      const src = shots[i] || (shots.length === 0 ? sampleShot(i % 4) : null);
+      const bleed = D.frame ? 3 : 0;   // tuck photo edges under the frame
+      if (src) x.drawImage(renderPhoto(src, s.w + 2*bleed, s.h + 2*bleed), s.x - bleed, s.y - bleed);
+      else {
+        x.fillStyle = D.frame ? "#2b2432" : "#e7e0d6"; x.fillRect(s.x, s.y, s.w, s.h);
+        x.fillStyle = D.frame ? "#8f8496" : "#a99fa0";
+        x.font = `500 ${Math.round(s.h / 12)}px 'IBM Plex Mono', monospace`;
+        x.textAlign = "center"; x.textBaseline = "middle";
+        x.fillText(String(i + 1), s.x + s.w/2, s.y + s.h/2);
+        x.textAlign = "left"; x.textBaseline = "alphabetic";
+      }
+    });
+    if (D.frame) x.drawImage(D.frame, 0, 0);
+    if (D.after) D.after(x);
+    const n = need();
+    slot.textContent = shots.length === 0 ? `SAMPLE STRIP · 0 OF ${n} TAKEN` : `${Math.min(shots.length, n)} OF ${n} TAKEN`;
+    saveBtn.disabled = shots.length < n;
+  }
+
+  // The viewfinder takes the shape of the design's first photo area,
+  // so what you see live is exactly what lands in the strip.
+  function applyDesignShape() {
+    const s = design.slots[0] || { w: 4, h: 3 };
+    const ar = s.w / s.h, f = $("finder");
+    f.style.setProperty("--slot-ar", `${s.w} / ${s.h}`);
+    f.style.setProperty("--slot-ar-num", ar.toFixed(4));
+    preview.width = 800; preview.height = Math.round(800 / ar);
+    // a wider strip on screen for wide designs, a narrow one for tall strips
+    const stripAr = design.width / design.height;
+    document.documentElement.style.setProperty("--strip-w", stripAr > 0.45 ? "280px" : "240px");
+    $("captionbox").hidden = !!design.frame;   // image designs carry their own text
   }
 
   function showPreview(src) {
-    const pc = preview.getContext("2d");
-    pc.drawImage(applyFilter(src, filter), 0, 0, PW, PH);
+    preview.getContext("2d").drawImage(renderPhoto(src, preview.width, preview.height), 0, 0);
     preview.hidden = false; video.hidden = true; hint.hidden = true;
   }
 
   function updateButtons() {
-    const n = shots.length;
-    shotno.textContent = n >= 4 ? "STRIP DONE" : `SHOT ${n+1} / 4`;
-    shootBtn.textContent = n >= 4 ? "Strip complete" : busy ? "Smile!" : liveFailed ? `Take photo ${n+1} of 4` : n === 0 ? "Take photo (4 in a row)" : "Continue the strip";
-    shootBtn.disabled = n >= 4 || busy;
+    const n = shots.length, N = need();
+    shotno.textContent = n >= N ? "STRIP DONE" : `SHOT ${n+1} / ${N}`;
+    shootBtn.textContent = n >= N ? "Strip complete" : busy ? "Smile!" : liveFailed ? `Take photo ${n+1} of ${N}` : n === 0 ? `Take photo (${N} in a row)` : "Continue the strip";
+    shootBtn.disabled = n >= N || busy;
   }
 
   function addShot(c) {
     shots.push(c);
     flash.classList.remove("go"); void flash.offsetWidth; flash.classList.add("go");
     showPreview(c); drawStrip(); updateButtons();
-    status.textContent = shots.length >= 4 ? "Strip ready. Save it, or start over." : "";
+    status.textContent = shots.length >= need() ? "Strip ready. Save it, or start over." : "";
   }
+
+  /* ---------- design picker ---------- */
+  const designBox = $("designs");
+  DESIGNS.forEach(d => {
+    const b = document.createElement("button");
+    b.className = "chip"; b.dataset.d = d.id; b.setAttribute("aria-pressed", d.id === designId ? "true" : "false");
+    const sw = document.createElement("span"); sw.className = "sw"; sw.style.background = d.swatch;
+    b.append(sw, d.name);
+    designBox.append(b);
+  });
+  async function selectDesign(id) {
+    designId = id;
+    designBox.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c.dataset.d === id ? "true" : "false"));
+    status.textContent = "Loading design…";
+    try {
+      const D = await getDesign(id);
+      if (designId !== id) return;          // another design was picked meanwhile
+      design = D;
+      if (!D.slots.length) throw new Error("no green areas");
+      status.textContent = shots.length >= need() ? "Strip ready. Save it, or start over." : "";
+    } catch (err) {
+      status.textContent = err.message === "no green areas"
+        ? "This design has no pure green (#00FF00) photo areas, so there's nowhere to put the photos."
+        : "This design couldn't be loaded. Check that the PNG is in the \"strip designs\" folder.";
+      design = classic; designId = "classic";
+      designBox.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c.dataset.d === "classic" ? "true" : "false"));
+    }
+    applyDesignShape();
+    if (!preview.hidden && shots.length) showPreview(shots[Math.min(shots.length, need()) - 1]);
+    drawStrip(); updateButtons();
+  }
+  designBox.addEventListener("click", e => {
+    const b = e.target.closest(".chip"); if (!b || busy) return;
+    selectDesign(b.dataset.d);
+  });
+  applyDesignShape();
 
   /* ---------- live camera (when the browser allows it) ---------- */
   async function tryLive() {
@@ -283,7 +446,7 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   async function runSequence() {
     busy = true; cancelled = false; updateButtons();
     let first = true;
-    while (shots.length < 4 && !cancelled) {
+    while (shots.length < need() && !cancelled) {
       video.hidden = false; preview.hidden = true;
       for (let n = first ? FIRST_COUNT : NEXT_COUNT; n > 0 && !cancelled; n--) {
         count.textContent = n; count.hidden = false; await wait(1000);
@@ -292,7 +455,7 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
       if (cancelled) break;
       addShot(capture(video, video.videoWidth, video.videoHeight, true, zoom));
       first = false;
-      if (shots.length < 4) { status.textContent = "Next photo coming…"; await wait(REVIEW_MS); }
+      if (shots.length < need()) { status.textContent = "Next photo coming…"; await wait(REVIEW_MS); }
     }
     count.hidden = true; busy = false; updateButtons();
   }
@@ -324,7 +487,7 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   startCamera(false);
 
   shootBtn.addEventListener("click", async () => {
-    if (busy || shots.length >= 4) return;
+    if (busy || shots.length >= need()) return;
     if (liveFailed) { file.click(); return; }
     if (!stream && !(await startCamera(true))) return;
     runSequence();
@@ -363,7 +526,7 @@ input[type=text] { width: 100%; font: 15px var(--f-body); color: var(--ink); bac
   $("lens").addEventListener("click", e => {
     const b = e.target.closest(".chip"); if (!b || busy) return;
     setZoom(parseFloat(b.dataset.z));
-    if (stream && shots.length < 4) { video.hidden = false; preview.hidden = true; }  // back to live view to compare
+    if (stream && shots.length < need()) { video.hidden = false; preview.hidden = true; }  // back to live view to compare
   });
   setZoom(zoom);   // every visit starts on Normal
 
